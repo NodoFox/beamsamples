@@ -1,6 +1,6 @@
-
 import com.google.common.base.Strings;
 import org.apache.beam.sdk.Pipeline;
+import org.apache.beam.sdk.coders.AvroCoder;
 import org.apache.beam.sdk.io.TextIO;
 import org.apache.beam.sdk.options.*;
 import org.apache.beam.sdk.transforms.*;
@@ -20,11 +20,12 @@ public class CharacterCount {
         @Description("Path from where to read the input")
         @Default.String("src/main/resources/shakespeare.txt")
         String getInputFilePath();
+
         void setInputFilePath(String value);
 
-        @Description("Path to write output")
-        @Default.InstanceFactory(CharacterOutputFactory.class)
+        @Description("Path to write output") @Default.InstanceFactory(CharacterOutputFactory.class)
         String getOutputFilePath();
+
         void setOutputFilePath(String value);
 
         public class CharacterOutputFactory implements DefaultValueFactory<String> {
@@ -45,52 +46,46 @@ public class CharacterCount {
             }
         }
     }
-    public static class ExtractWordsFn extends DoFn<String, String> {
-        @DoFn.ProcessElement
-        public void processElement(ProcessContext c ) {
-            if(c.element()!= null) {
-                //String regex = "([^(\\W_)]+){2,}";
-                String regex = "\\s";
-                String[] words = c.element().split(regex);
-                for(String word : words) {
-                    if(word != null && !word.isEmpty()) {
-                        c.output(word.trim());
-                    }
 
+    //Break a line into PCollection of Characters
+    public static class CharacterBreakFn extends DoFn<String, Character> {
+        @DoFn.ProcessElement public void processElement(ProcessContext c) {
+            if (c.element() != null) {
+                char[] letters = c.element().toCharArray();
+                for (char letter : letters) {
+                    c.output(letter);
                 }
             }
         }
     }
-    public static class WordLengthFn extends DoFn<String, Integer> {
-        @DoFn.ProcessElement
-        public void processElement(ProcessContext c ) {
-            if(c.element() != null) {
-                c.output(c.element().length());
-            }
-        }
-    }
-    public static class SumWordLength extends PTransform<PCollection<String>,PCollection<Integer>> {
 
-        @Override public PCollection<Integer> apply(PCollection<String> lines) {
-            PCollection<String> words = lines.apply(ParDo.of(new ExtractWordsFn()));
-            PCollection<Integer> wordLengths = words.apply(ParDo.of(new WordLengthFn()));
-            PCollection<Integer> sumWordLengths = wordLengths.apply(Sum.integersGlobally());
-            return sumWordLengths;
-        }
-    }
-    public static class IntegerToStringFn extends SimpleFunction<Integer, String> {
+    public static class SumCharacters extends PTransform<PCollection<String>, PCollection<KV<Character, Long>>> {
+        @Override public PCollection<KV<Character, Long>> apply(PCollection<String> lines) {
+            PCollection<Character> characters = lines.apply(ParDo.of(new CharacterBreakFn()));
+            characters.setCoder(AvroCoder.of(Character.TYPE)); // set encoding for character type
 
-        @Override public String apply(Integer input) {
-            return String.valueOf(input);
+            PCollection<KV<Character, Long>> characterCount = characters.apply(Count.<Character>perElement());
+            return characterCount;
         }
     }
+
+    public static String delim = " : ";
+
+    public static class ToStringFn extends SimpleFunction<KV<Character, Long>, String> {
+
+        @Override public String apply(KV<Character, Long> input) {
+            return input.getKey() + delim + String.valueOf(input.getValue());
+        }
+    }
+
     public static void main(String[] args) {
-        CharacterCountOptions options = PipelineOptionsFactory.fromArgs(args).withValidation().as(CharacterCountOptions.class);
+        CharacterCountOptions options = PipelineOptionsFactory.fromArgs(args).withValidation()
+                .as(CharacterCountOptions.class);
         System.out.println(new File("").getAbsolutePath());
         Pipeline pipeline = Pipeline.create(options);
-        pipeline.apply("ReadLines",TextIO.Read.from(options.getInputFilePath()))
-                .apply(new SumWordLength())
-                .apply(Sum.integersGlobally()).apply(MapElements.via(new IntegerToStringFn()))
+
+        pipeline.apply("ReadLines", TextIO.Read.from(options.getInputFilePath())).apply(new SumCharacters())
+                .apply(MapElements.via(new ToStringFn()))
                 .apply("WriteLines", TextIO.Write.to(options.getOutputFilePath()));
         pipeline.run();
     }
